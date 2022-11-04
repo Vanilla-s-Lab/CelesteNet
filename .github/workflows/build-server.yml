@@ -1,0 +1,64 @@
+name: build-server
+on: push
+
+env:
+  appId: 504230
+  NUGET_PACKAGES: ${{ github.workspace }}\.nuget\packages
+
+jobs:
+  build-server:
+    runs-on: windows-latest
+
+    steps:
+      - uses: "actions/cache@v3"
+        with:
+          path: "C:\\${{ env.appId }}"
+          key: ${{ env.appId }}
+
+      # https://github.com/SteamRE/DepotDownloader/issues/340
+      # https://github.com/Skippeh/steamfetch-action/releases/tag/v1.0.2
+      # https://github.com/Skippeh/steamfetch-action/pull/1
+      - uses: "Skippeh/steamfetch-action@v1.0.3"
+
+        with:
+          dir: "C:\\${{ env.appId }}"
+          os: "windows"
+          app: ${{ env.appId }}
+          osarch: 64
+
+          username: "CelesteNet" # CI account.
+          password: "${{ secrets.STEAM_PASS }}"
+
+          beta: opengl
+
+      # TODO: Avoid install over and over again.
+      - uses: robinraju/release-downloader@v1.6
+        with:
+          repository: "EverestAPI/Everest"
+          latest: true
+          fileName: "main.zip"
+
+          tarBall: false
+          zipBall: false
+
+      # https://documentation.help/7-Zip/overwrite.htm
+      - run: "7z e main.zip 'main\\*' -oC:\\${{ env.appId }} -aoa"
+      - run: "cd C:\\${{ env.appId }} && .\\MiniInstaller.exe"
+      - uses: actions/checkout@v3
+
+      # https://github.com/actions/cache/blob/main/examples.md#c---nuget
+      - uses: actions/cache@v3
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget
+
+      # https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-publish
+      - run: dotnet publish -c Release -f net452 -a x86 CelesteNet.Server
+
+      - run: mkdir CelesteNet.Server\bin\Release\net452\win-x86\publish\Modules
+      - run: ni CelesteNet.Server\bin\Release\net452\win-x86\publish\Modules\.gitkeep
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: publish
+          path: CelesteNet.Server\bin\Release\net452\win-x86\publish
