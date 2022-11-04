@@ -62,7 +62,7 @@
     <When Condition="'$(CelesteDir)' == ''">
       <!-- Whoops. -->
       <PropertyGroup>
-        <CelesteDir></CelesteDir>
+        <CelesteDir>C:\504230</CelesteDir>
         <InCelesteModDir>false</InCelesteModDir>
         <CopyCeleste Condition="'$(CopyCeleste)' == ''">!$(IsModule)</CopyCeleste>
       </PropertyGroup>
