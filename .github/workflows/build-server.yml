@@ -32,7 +32,7 @@ jobs:
           beta: opengl
 
       # TODO: Avoid install over and over again.
-      - uses: robinraju/release-downloader@v1.6
+      - uses: robinraju/release-downloader@v1.7
         with:
           repository: "EverestAPI/Everest"
           latest: true
