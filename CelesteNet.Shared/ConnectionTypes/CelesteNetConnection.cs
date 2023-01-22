@@ -184,6 +184,13 @@ namespace Celeste.Mod.CelesteNet {
                     return;
                 if (_FrontQueue.Count >= MaxSize) {
                     Logger.Log(LogLevel.WRN, "sendqueue", $"Connection {Con}'s send queue '{Name}' is at maximum size");
+                    if (Logger.Level >= LogLevel.VVV) {
+                        try {
+                            while (_FrontQueue.TryDequeue(out DataType? packet)) {
+                                Logger.Log(LogLevel.VVV, "sendqueue", $"Packet on '{Name}': {packet.GetType()} = {packet}");
+                            }
+                        } catch { }
+                    }
                     Con.DisposeSafe();
                     return;
                 }
@@ -262,7 +269,6 @@ namespace Celeste.Mod.CelesteNet {
                 } catch (Exception e) {
                     Logger.Log(LogLevel.WRN, "sendqueue", $"Error flushing connection {Con}'s send queue '{Name}': {e}");
                     Con.DisposeSafe();
-                    Dispose();
                 }
             }
         }

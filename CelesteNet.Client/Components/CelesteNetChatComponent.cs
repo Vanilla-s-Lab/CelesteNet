@@ -18,6 +18,8 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
 
         public float Scale => Settings.UIScale;
 
+        public float? RenderPositionY { get; private set; } = null;
+
         protected Overlay _DummyOverlay = new PauseUpdateOverlay();
 
         public List<DataChat> Log = new();
@@ -73,11 +75,63 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
         }
 
         protected bool _ControlHeld = false;
-        protected bool _CursorMoveFast = false;
 
-        protected float _TimeSinceCursorMove = 0;
-        protected float _CursorInitialMoveDelay = 0.4f;
-        protected float _CursorMoveDelay = 0.1f;
+        protected InputRepeatDelay LeftRightRepeatDelay = new(Keys.Left, Keys.Right);
+        protected InputRepeatDelay DeleteRepeatDelay = new(Keys.Delete);
+
+        public class InputRepeatDelay {
+            /* A class to implement a key input delay that when held
+             * - allows the action to perform right away
+             * - then has an inital delay before triggering again
+             * - after that uses a faster moving delay to trigger
+             * e.g. like when holding down Left/Right Arrow Key in a text editor.
+             */
+
+            public readonly Keys InputA;
+            public readonly Keys InputB;
+
+            public readonly float InitialDelay;
+            public readonly float MoveDelay;
+
+            protected bool IsDownA => MInput.Keyboard.Check(InputA);
+            protected bool IsDownB => MInput.Keyboard.Check(InputB);
+            protected bool WasDownA => MInput.Keyboard.PreviousState[InputA] == KeyState.Down;
+            protected bool WasDownB => MInput.Keyboard.PreviousState[InputB] == KeyState.Down;
+
+            public bool CanMove => timeSinceMoved > (moveFast ? MoveDelay : InitialDelay) || (!WasDownA && !WasDownB);
+
+            private bool moveFast = false;
+            private float timeSinceMoved = 0;
+
+            public InputRepeatDelay(Keys A, Keys B = Keys.None, float initialDelay = 0.3f, float moveDelay = 0.05f) {
+                // can be used with a single key, where InputB gets set to A also
+                InputA = A;
+                InputB = (B != Keys.None) ? B : A;
+                InitialDelay = initialDelay;
+                MoveDelay = moveDelay;
+            }
+
+            public void Update(float time) {
+                timeSinceMoved += time;
+
+                if (!IsDownA && !IsDownB) {
+                    // always reset so that first press has no delays
+                    timeSinceMoved = 0;
+                }
+            }
+
+            public bool Check(Keys K) {
+                if (K != InputA && K != InputB)
+                    return false;
+                return MInput.Keyboard.Check(K) && CanMove;
+            }
+
+            public void Triggered() {
+                timeSinceMoved = 0;
+                // this is where moveFast gets set, so that MoveDelay only gets used after first trigger had InitialDelay
+                moveFast = WasDownA || WasDownB;
+            }
+        }
 
         protected bool _SceneWasPaused;
         protected int _ConsumeInput;
@@ -140,6 +194,9 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
         }
 
         public void Handle(CelesteNetConnection con, DataChat msg) {
+            if (Client == null)
+                return;
+
             lock (Log) {
                 if (msg.Player?.ID == Client.PlayerInfo?.ID) {
                     foreach (DataChat pending in Pending.Values) {
@@ -175,12 +232,19 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
         public override void Update(GameTime gameTime) {
             base.Update(gameTime);
 
-            _Time += Engine.RawDeltaTime;
-            _TimeSinceCursorMove += Engine.RawDeltaTime;
+            if (Client == null) {
+                Active = false;
+                return;
+            }
 
+            _Time += Engine.RawDeltaTime;
+
+            Overworld overworld = Engine.Scene as Overworld;
             bool isRebinding = Engine.Scene == null ||
                 Engine.Scene.Entities.FindFirst<KeyboardConfigUI>() != null ||
-                Engine.Scene.Entities.FindFirst<ButtonConfigUI>() != null;
+                Engine.Scene.Entities.FindFirst<ButtonConfigUI>() != null ||
+                ((overworld?.Current ?? overworld?.Next) is OuiFileNaming naming && naming.UseKeyboardInput) ||
+                ((overworld?.Current ?? overworld?.Next) is UI.OuiModOptionString stringInput && stringInput.UseKeyboardInput);
 
             if (!(Engine.Scene?.Paused ?? true) || isRebinding) {
                 string typing = Typing;
@@ -196,22 +260,8 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
 
                 _ControlHeld = MInput.Keyboard.Check(Keys.LeftControl) || MInput.Keyboard.Check(Keys.RightControl);
 
-                if (!MInput.Keyboard.Check(Keys.Left) && !MInput.Keyboard.Check(Keys.Right)) {
-                    _CursorMoveFast = false;
-                    _TimeSinceCursorMove = 0;
-                }
-
-                // boolean to determine if Left or Right were already held on previous frame
-                bool _directionHeldLast = MInput.Keyboard.PreviousState[Keys.Left] == KeyState.Down
-                                       || MInput.Keyboard.PreviousState[Keys.Right] == KeyState.Down;
-
-                bool _cursorCanMove = true;
-                // conditions for the cursor to be moving:
-                // 1. Don't apply delays on first frame Left/Right is pressed
-                if (_directionHeldLast) {
-                    // 2. Delay time depends on whether this is the initial delay or subsequent "scrolling" left or right
-                    _cursorCanMove = _TimeSinceCursorMove > (_CursorMoveFast ? _CursorMoveDelay : _CursorInitialMoveDelay);
-                }
+                LeftRightRepeatDelay.Update(Engine.RawDeltaTime);
+                DeleteRepeatDelay.Update(Engine.RawDeltaTime);
 
                 if (MInput.Keyboard.Pressed(Keys.Enter)) {
                     if (!string.IsNullOrWhiteSpace(Typing))
@@ -225,7 +275,7 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
                 } else if (MInput.Keyboard.Pressed(Keys.Up) && RepeatIndex < Repeat.Count - 1) {
                     RepeatIndex++;
 
-                } else if (MInput.Keyboard.Check(Keys.Left) && _cursorCanMove && CursorIndex > 0) {
+                } else if (LeftRightRepeatDelay.Check(Keys.Left) && CursorIndex > 0) {
                     if (_ControlHeld) {
                         // skip over space right before the cursor, if there is one
                         if (Typing[_CursorIndex - 1] == ' ')
@@ -237,19 +287,37 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
                     } else {
                         CursorIndex--;
                     }
-                    _TimeSinceCursorMove = 0;
-                    _CursorMoveFast = _directionHeldLast;
+                    LeftRightRepeatDelay.Triggered();
                     _Time = 0;
 
-                } else if (MInput.Keyboard.Check(Keys.Right) && _cursorCanMove && CursorIndex < Typing.Length) {
+                } else if (LeftRightRepeatDelay.Check(Keys.Right) && CursorIndex < Typing.Length) {
                     if (_ControlHeld) {
                         int nextWord = Typing.IndexOf(" ", _CursorIndex);
                         CursorIndex = (nextWord < 0) ? Typing.Length : nextWord + 1;
                     } else {
                         CursorIndex++;
                     }
-                    _TimeSinceCursorMove = 0;
-                    _CursorMoveFast = _directionHeldLast;
+                    LeftRightRepeatDelay.Triggered();
+                    _Time = 0;
+                } else if (DeleteRepeatDelay.Check(Keys.Delete) && CursorIndex < Typing.Length) {
+                    // Delete - remove character after cursor.
+                    if (_ControlHeld && Typing[_CursorIndex] != ' ') {
+                        int nextWord = Typing.IndexOf(" ", _CursorIndex);
+                        // if control is held and a space is found, remove from cursor to space
+                        if (nextWord >= 0) {
+                            // include the found space in removal
+                            nextWord++;
+                            Typing = Typing.Remove(_CursorIndex, nextWord - _CursorIndex);
+                        } else {
+                            // otherwise remove everything after cursor
+                            Typing = Typing.Substring(0, _CursorIndex);
+                        }
+                    } else {
+                        // just remove single char
+                        Typing = Typing.Remove(_CursorIndex, 1);
+                    }
+                    DeleteRepeatDelay.Triggered();
+                    _RepeatIndex = 0;
                     _Time = 0;
 
                 } else if (MInput.Keyboard.Pressed(Keys.Home)) {
@@ -271,6 +339,8 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
                 Input.ESC.ConsumePress();
                 Input.Pause.ConsumeBuffer();
                 Input.Pause.ConsumePress();
+                Input.QuickRestart.ConsumeBuffer();
+                Input.QuickRestart.ConsumePress();
                 _ConsumeInput--;
             }
 
@@ -306,26 +376,6 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
                     // remove <trim> amount of characters before cursor
                     Typing = Typing.Remove(_CursorIndex - trim, trim);
                     _CursorIndex -= trim;
-                }
-                _RepeatIndex = 0;
-                _Time = 0;
-
-            } else if (c == (char) 127 && CursorIndex < Typing.Length) {
-                // Delete - remove character after cursor.
-                if (_ControlHeld && Typing[_CursorIndex] != ' ') {
-                    int nextWord = Typing.IndexOf(" ", _CursorIndex);
-                    // if control is held and a space is found, remove from cursor to space
-                    if (nextWord >= 0) {
-                        // include the found space in removal
-                        nextWord++;
-                        Typing = Typing.Remove(_CursorIndex, nextWord - _CursorIndex);
-                    } else {
-                        // otherwise remove everything after cursor
-                        Typing = Typing.Substring(0, _CursorIndex);
-                    }
-                } else {
-                    // just remove single char
-                    Typing = Typing.Remove(_CursorIndex, 1);
                 }
                 _RepeatIndex = 0;
                 _Time = 0;
@@ -396,6 +446,8 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
                 }
             }
 
+            RenderPositionY = null;
+
             lock (Log) {
                 List<DataChat> log = Mode switch {
                     ChatMode.Special => LogSpecial,
@@ -462,6 +514,8 @@ namespace Celeste.Mod.CelesteNet.Client.Components {
                             msg.Color * alpha * (msg.ID == uint.MaxValue ? 0.8f : 1f)
                         );
                     }
+
+                    RenderPositionY = y;
                 }
             }
         }

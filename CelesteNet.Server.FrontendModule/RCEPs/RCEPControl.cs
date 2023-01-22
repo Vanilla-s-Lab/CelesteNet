@@ -61,7 +61,7 @@ namespace Celeste.Mod.CelesteNet.Server.Control {
                         do {
                             key = Guid.NewGuid().ToString();
                         } while (!f.CurrentSessionKeys.Add(key) || !f.CurrentSessionExecKeys.Add(key));
-                        c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key));
+                        c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key, "/"));
                         f.RespondJSON(c, new {
                             Key = key,
                             Info = $"Welcome, {info.Name}#{info.Discrim}"
@@ -72,7 +72,7 @@ namespace Celeste.Mod.CelesteNet.Server.Control {
                         do {
                             key = Guid.NewGuid().ToString();
                         } while (!f.CurrentSessionKeys.Add(key));
-                        c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key));
+                        c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key, "/"));
                         f.RespondJSON(c, new {
                             Key = key,
                             Info = $"Welcome, {info.Name}#{info.Discrim}"
@@ -104,7 +104,7 @@ namespace Celeste.Mod.CelesteNet.Server.Control {
                 do {
                     key = Guid.NewGuid().ToString();
                 } while (!f.CurrentSessionKeys.Add(key) || !f.CurrentSessionExecKeys.Add(key));
-                c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key));
+                c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key, "/"));
                 f.RespondJSON(c, new {
                     Key = key
                 });
@@ -115,7 +115,7 @@ namespace Celeste.Mod.CelesteNet.Server.Control {
                 do {
                     key = Guid.NewGuid().ToString();
                 } while (!f.CurrentSessionKeys.Add(key));
-                c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key));
+                c.Response.SetCookie(new(Frontend.COOKIE_SESSION, key, "/"));
                 f.RespondJSON(c, new {
                     Key = key
                 });
@@ -350,26 +350,46 @@ namespace Celeste.Mod.CelesteNet.Server.Control {
         [RCEndpoint(false, "/players", null, null, "Player List", "Basic player list.")]
         public static void Players(Frontend f, HttpRequestEventArgs c) {
             bool auth = f.IsAuthorized(c);
-            f.RespondJSON(c, f.Server.PlayersByID.Values.Select(p => new {
-                ID = p.SessionID,
-                UID = auth ? p.UID : null,
-                p.PlayerInfo?.Name,
-                p.PlayerInfo?.FullName,
-                p.PlayerInfo?.DisplayName,
-                Avatar = f.Server.UserData.HasFile(p.UID, "avatar.png") ? $"{f.Settings.APIPrefix}/avatar?uid={p.UID}" : null,
 
-                Connection = auth ? p.Con.ID : null,
-                ConnectionUID = auth ? p.Con.UID : null,
+            // Gate the players endpoint behind control panel auth or player auth, as exposing online player names is a bit eh.
+            if (!auth && (
+                    c.Request.Cookies[COOKIE_KEY]?.Value is not string key || key.IsNullOrEmpty() ||
+                    f.Server.UserData.GetUID(key) is not string uid || uid.IsNullOrEmpty()
+            )) {
+                c.Response.StatusCode = (int) HttpStatusCode.Unauthorized;
+                f.RespondJSON(c, new {
+                    Error = "Unauthorized."
+                });
+                return;
+            }
 
-                TCPDownlinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPRecvRate.ByteRate : null,
-                TCPDownlinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPRecvRate.PacketRate : null,
-                TCPUplinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPSendRate.ByteRate : null,
-                TCPUplinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPSendRate.PacketRate : null,
-                UDPDownlinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPRecvRate.ByteRate : null,
-                UDPDownlinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPRecvRate.PacketRate : null,
-                UDPUplinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPSendRate.ByteRate : null,
-                UDPUplinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPSendRate.PacketRate : null,
-            }).ToArray());
+            object responseObj;
+            using (f.Server.ConLock.R()) {
+                responseObj = f.Server.PlayersByID.Values.Select(p => new {
+                    ID = p.SessionID,
+                    UID = auth ? p.UID : null,
+                    p.PlayerInfo?.Name,
+                    p.PlayerInfo?.FullName,
+                    p.PlayerInfo?.DisplayName,
+                    Avatar = f.Server.UserData.HasFile(p.UID, "avatar.png") ? $"{f.Settings.APIPrefix}/avatar?uid={p.UID}" : null,
+
+                    Connection = auth ? p.Con.ID : null,
+                    ConnectionUID = auth ? p.Con.UID : null,
+
+                    TCPPingMs = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPPingMs : null,
+                    UDPPingMs = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPPingMs : null,
+
+                    TCPDownlinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPRecvRate.ByteRate : null,
+                    TCPDownlinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPRecvRate.PacketRate : null,
+                    TCPUplinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPSendRate.ByteRate : null,
+                    TCPUplinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.TCPSendRate.PacketRate : null,
+                    UDPDownlinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPRecvRate.ByteRate : null,
+                    UDPDownlinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPRecvRate.PacketRate : null,
+                    UDPUplinkBpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPSendRate.ByteRate : null,
+                    UDPUplinkPpS = auth ? (p.Con as ConPlusTCPUDPConnection)?.UDPSendRate.PacketRate : null,
+                }).ToArray();
+            }
+            f.RespondJSON(c, responseObj);
         }
 
         [RCEndpoint(false, "/channels", null, null, "Channel List", "Basic channel list.")]
@@ -402,7 +422,7 @@ namespace Celeste.Mod.CelesteNet.Server.Control {
             lock (buffer) {
                 for (int i = Math.Max(-buffer.Moved, -count); i < 0; i++) {
                     DataChat? msg = buffer[i];
-                    if (msg != null && (msg.Target == null || auth))
+                    if (msg != null && ((msg.Targets?.Length ?? 0) == 0 || auth))
                         log.Add(detailed ? msg.ToDetailedFrontendChat() : msg.ToFrontendChat());
                 }
             }
